@@ -97,14 +97,16 @@ function fillTeams(){
   $("th").innerHTML=o;$("ta").innerHTML=o;if(ts.length>1)$("ta").selectedIndex=1;
 }
 $("lg").onchange=fillTeams;
+$("th").onchange=$("ta").onchange=()=>{OU=null};
 const LAB={F1:"Ligue 1",E0:"Premier League",SP1:"La Liga",D1:"Bundesliga",I1:"Serie A",CL:"Ligue des champions"};
 fetch("data.json?"+Date.now()).then(r=>r.json()).then(D=>{
   build(D.past.map(r=>({d:Date.parse(r[0]),div:r[1],h:r[2],a:r[3],hg:r[4],ag:r[5]})));
+  SC=[].concat(...Object.entries(D.scorers||{}).filter(e=>e[0]!=="CL").map(e=>e[1]));
   $("st").textContent+=" Mis à jour le "+new Date(D.updated).toLocaleString("fr-FR",{dateStyle:"short",timeStyle:"short"})+".";
   const fx=D.fixtures.filter(f=>T[f.h]&&T[f.a]);
   $("fx").innerHTML=fx.length?'<h2 style="border:0;margin:8px 0 0">Prochains matchs</h2>'+fx.map((f,i)=>`<button class="fxb" data-i="${i}"><span>${f.h} – ${f.a}</span><span class="note">${new Date(f.t).toLocaleString("fr-FR",{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})} · ${LAB[f.div]||f.div}</span></button>`).join(""):'<div class="card note">Aucun match à venir dans les données.</div>';
   document.querySelectorAll(".fxb").forEach(b=>b.onclick=()=>{const f=fx[b.dataset.i];
-    $("lg").value=f.div;fillTeams();$("th").value=f.h;$("ta").value=f.a;$("go").click();$("out").scrollIntoView({behavior:"smooth"})});
+    $("lg").value=f.div;fillTeams();$("th").value=f.h;$("ta").value=f.a;const o=f.o||[];$("o1").value=o[0]||"";$("oN").value=o[1]||"";$("o2").value=o[2]||"";OU=f.ou||null;$("go").click();$("out").scrollIntoView({behavior:"smooth"})});
 }).catch(()=>{$("st").textContent="Impossible de charger data.json : lance d’abord la mise à jour (voir le guide)."});
 
 const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
@@ -144,6 +146,17 @@ function bar(t,a,b,fmt,low){
 }
 const pc=x=>Math.round(x)+"%",d1=x=>x.toFixed(2);
 
+let SC=[],OU=null;
+function players(h,a,m){
+  const rows=[];
+  for(const [t,x] of [[h,m.xh],[a,m.xa]]){
+    const base=avg(T[t].slice(-20).map(g=>g.gf))||1,k=x/base;
+    SC.filter(p=>p.t===t&&p.m>=3).forEach(p=>rows.push({n:p.p,t,g:p.g,m:p.m,pb:1-Math.exp(-(p.g/p.m)*k),pa:1-Math.exp(-(p.a/p.m)*k)}));
+  }
+  if(!rows.length)return "";
+  rows.sort((u,v)=>v.pb-u.pb);
+  return `<h2>Buteurs probables (ajustés aux buts attendus du match)</h2><div class="scroll"><table>`+rows.slice(0,8).map(r=>`<tr><td>${r.n}<div class="note">${r.t}</div></td><td>${r.g} buts en ${r.m} matchs</td><td class="ev">${pc(r.pb*100)}</td><td class="note">passe déc. ${pc(r.pa*100)}</td></tr>`).join("")+`</table></div><p class="note">La source gratuite ne couvre que les 50 meilleurs buteurs du championnat. Probabilités indicatives : buts par match de la saison, ajustés aux buts attendus de l’équipe dans ce match.</p>`;
+}
 $("go").onclick=()=>{
   const h=$("th").value,a=$("ta").value,div=$("lg").value;
   if(!h||!a||h===a){$("out").innerHTML='<div class="card">Choisis deux équipes différentes.</div>';return}
@@ -158,12 +171,10 @@ $("go").onclick=()=>{
   <div class="pr"><div style="width:${m.p1*100}%;background:var(--h)">${pc(m.p1*100)}</div><div class="x" style="width:${m.pN*100}%">${pc(m.pN*100)}</div><div style="width:${m.p2*100}%;background:var(--a)">${pc(m.p2*100)}</div></div>
   <div class="pl"><span>Victoire ${h}</span><span>Nul</span><span>Victoire ${a}</span></div>
   <div class="row" style="margin-top:12px"><div><div class="note">Les deux marquent</div><b>${pc(m.bt*100)}</b></div><div style="text-align:right"><div class="note">Plus de 2,5 buts</div><b>${pc(m.ov*100)}</b></div></div>`;
-  const o=[+$("o1").value,+$("oN").value,+$("o2").value];
-  if(o.every(x=>x>1)){
-    const P=[m.p1,m.pN,m.p2],L=["1","N","2"];
-    html+=`<h2>Valeur par rapport aux cotes</h2><table>`+o.map((c,i)=>{const ev=P[i]*c-1;
-      return `<tr><td>${L[i]} à ${c}</td><td>modèle ${pc(P[i]*100)} / cote ${pc(100/c)}</td><td class="ev ${ev>0?"pos":"neg"}">${ev>0?"+":""}${(ev*100).toFixed(1)}%</td></tr>`}).join("")+`</table><p class="note">Valeur positive = le modèle voit plus de chances que la cote. À prendre avec prudence.</p>`;
-  }
+  const o=[+$("o1").value,+$("oN").value,+$("o2").value],rows=[];
+  if(o.every(x=>x>1)){const P=[m.p1,m.pN,m.p2],L=["Victoire "+h,"Nul","Victoire "+a];o.forEach((c,i)=>rows.push([L[i],P[i],c]))}
+  if(OU&&OU[0]>1&&OU[1]>1)rows.push(["Plus de 2,5 buts",m.ov,OU[0]],["Moins de 2,5 buts",1-m.ov,OU[1]]);
+  if(rows.length)html+=`<h2>Valeur par rapport aux cotes</h2><table>`+rows.map(([l,p,c])=>{const ev=p*c-1;return `<tr><td>${l} à ${c}</td><td>modèle ${pc(p*100)} / cote ${pc(100/c)}</td><td class="ev ${ev>0?"pos":"neg"}">${ev>0?"+":""}${(ev*100).toFixed(1)}%</td></tr>`}).join("")+`</table><p class="note">Cotes moyennes du marché (pas Betclic/Winamax). Valeur positive = le modèle voit plus de chances que la cote : à prendre avec prudence.</p>`;
   html+=`<h2>Niveau et forme</h2>`+bar("Classement Elo",sh.elo,sa.elo,x=>Math.round(x))
    +bar("Forme (5 derniers matchs, % de points)",sh.forme,sa.forme,pc)
    +`<h2>Buts (8 derniers matchs)</h2>`+bar("Buts marqués par match",sh.gf,sa.gf,d1)
@@ -173,7 +184,7 @@ $("go").onclick=()=>{
    +bar("Plus de 2,5 buts (10 derniers)",sh.o25,sa.o25,pc)
    +`<h2>Face-à-face (${hh.length} matchs dans les données)</h2>`
    +(hh.length?bar(`${w1} victoires ${h} · ${wn} nuls · ${w2} victoires ${a}`,w1,w2,x=>x):`<p class="note">Aucune confrontation dans les fichiers chargés.</p>`)
-   +`</div>`;
+   +players(h,a,m)+`</div>`;
   $("out").innerHTML=html;
 };
 </script>

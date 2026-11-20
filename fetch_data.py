@@ -1,6 +1,7 @@
 """Récupère l'historique (football-data.co.uk) + matchs récents et à venir (football-data.org) -> data.json"""
 import os, io, csv, json, re, time, unicodedata, difflib, datetime as dt
 import requests
+from zoneinfo import ZoneInfo
 
 KEY = os.environ.get("FOOTBALL_DATA_KEY", "")
 LEAGUES = {"FL1": "F1", "PL": "E0", "PD": "SP1", "BL1": "D1", "SA": "I1", "CL": "CL"}  # code API -> code CSV
@@ -71,8 +72,35 @@ def exists(d, h, a):
     base = dt.date.fromisoformat(d)
     return any((str(base + dt.timedelta(days=k)), h, a) in seen for k in (-1, 0, 1))
 
+# 1b) Matchs à venir + cotes moyennes du marché : fixtures.csv (football-data.co.uk)
+def num(row, *keys):
+    for k in keys:
+        try:
+            v = float(row.get(k))
+            if v > 1: return v
+        except Exception: pass
+    return None
+
+csv_fx = []
+try:
+    r = requests.get("https://www.football-data.co.uk/fixtures.csv", timeout=30)
+    for row in csv.DictReader(io.StringIO(r.content.decode("utf-8-sig", errors="replace"))):
+        d = parse_date(row.get("Date") or "")
+        h, a = (row.get("HomeTeam") or "").strip(), (row.get("AwayTeam") or "").strip()
+        if not (d and h and a): continue
+        try:
+            t = dt.datetime.strptime(d + " " + (row.get("Time") or "00:00").strip(), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Europe/London")).astimezone(dt.timezone.utc)
+        except Exception:
+            t = dt.datetime.fromisoformat(d + "T00:00:00+00:00")
+        csv_fx.append({"t": t.isoformat(timespec="minutes").replace("+00:00", "Z"), "div": row.get("Div"), "h": h, "a": a,
+                       "o": [num(row, "AvgH", "B365H"), num(row, "AvgD", "B365D"), num(row, "AvgA", "B365A")],
+                       "ou": [num(row, "Avg>2.5", "B365>2.5"), num(row, "Avg<2.5", "B365<2.5")]})
+    print("ok fixtures.csv", len(csv_fx))
+except Exception as e:
+    print("erreur fixtures.csv", e)
+
 # 2) Récent + à venir : football-data.org (saison en cours, offre gratuite)
-fixtures, now = [], dt.datetime.now(dt.timezone.utc)
+fixtures, scorers, now = [], {}, dt.datetime.now(dt.timezone.utc)
 if not KEY:
     print("Pas de clé FOOTBALL_DATA_KEY : historique seulement, pas de matchs à venir.")
 else:
@@ -92,12 +120,24 @@ else:
                     t = dt.datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
                     if now <= t <= now + dt.timedelta(days=DAYS_AHEAD):
                         fixtures.append({"t": m["utcDate"], "div": div, "h": h, "a": a})
+            time.sleep(7)
+            sc = requests.get(f"https://api.football-data.org/v4/competitions/{code}/scorers?limit=50", headers={"X-Auth-Token": KEY}, timeout=30)
+            if sc.ok:
+                scorers[div] = [{"p": x["player"]["name"], "t": canon(x["team"]["name"] or ""), "g": x.get("goals") or 0,
+                                 "a": x.get("assists") or 0, "pen": x.get("penalties") or 0, "m": x.get("playedMatches") or 0}
+                                for x in sc.json().get("scorers", [])]
             print("ok API", code)
         except Exception as e:
             print("erreur API", code, e)
         time.sleep(7)  # limite gratuite : 10 requêtes/minute
 
+byk = {(f["h"], f["a"]): f for f in csv_fx}
+have = {(f["h"], f["a"]) for f in fixtures}
+for f in fixtures:
+    c = byk.get((f["h"], f["a"]))
+    if c: f["o"], f["ou"] = c["o"], c["ou"]
+fixtures += [f for k, f in byk.items() if k not in have]
 past.sort(key=lambda x: x[0]); fixtures.sort(key=lambda x: x["t"])
-json.dump({"updated": now.isoformat(timespec="minutes"), "past": past, "fixtures": fixtures},
+json.dump({"updated": now.isoformat(timespec="minutes"), "past": past, "fixtures": fixtures, "scorers": scorers},
           open("data.json", "w", encoding="utf-8"), separators=(",", ":"), ensure_ascii=False)
 print(len(past), "matchs,", len(fixtures), "à venir")
